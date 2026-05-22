@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Expense Tracker</title>
+<title>Expense Tracker — Smart Filter</title>
 
 <style>
 *{
@@ -161,7 +161,7 @@ select:focus{
   transform:scale(.98);
 }
 
-/* SEARCH */
+/* SEARCH + FILTER BAR */
 
 .search-box{
   margin-bottom:18px;
@@ -169,6 +169,41 @@ select:focus{
 
 .search-box input{
   background:white;
+}
+
+/* FILTER ROW — NEW (preserves design) */
+.filter-row {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.filter-btn {
+  flex: 1;
+  text-align: center;
+  background: #F1F5F9;
+  border: none;
+  border-radius: 999px;
+  padding: 12px 8px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #334155;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  backdrop-filter: blur(2px);
+  letter-spacing: 0.3px;
+}
+
+.filter-btn:active {
+  transform: scale(0.97);
+}
+
+/* active state: blue gradient + white text */
+.filter-btn.active-filter {
+  background: linear-gradient(135deg, #2563EB, #1D4ED8);
+  color: white;
+  box-shadow: 0 6px 14px rgba(37, 99, 235, 0.25);
 }
 
 /* HISTORY */
@@ -315,10 +350,13 @@ select:focus{
   .app-container{
     max-width:720px;
   }
+  .filter-btn {
+    padding: 14px 8px;
+    font-size: 16px;
+  }
 }
 </style>
 </head>
-
 <body>
 
 <div class="app-container">
@@ -330,61 +368,56 @@ select:focus{
 
   <div class="dashboard-sticky">
     <div class="stats-grid">
-
       <div class="stat-card">
         <div class="stat-label">Credit</div>
         <div class="stat-number credit-num" id="totalCredit">₹0</div>
       </div>
-
       <div class="stat-card">
         <div class="stat-label">Debit</div>
         <div class="stat-number debit-num" id="totalDebit">₹0</div>
       </div>
-
       <div class="stat-card">
         <div class="stat-label">Balance</div>
         <div class="stat-number balance-num" id="balance">₹0</div>
       </div>
-
     </div>
   </div>
 
   <div class="add-transaction-card" id="addCard">
-
     <div class="section-title">➕ New transaction</div>
-
     <div class="input-group">
       <label>Type</label>
-
       <select id="txnType">
         <option value="credit">Credit</option>
         <option value="debit">Debit</option>
       </select>
     </div>
-
     <div class="input-group">
       <label>Amount</label>
       <input type="number" id="amount" placeholder="Enter amount">
     </div>
-
     <div class="input-group">
       <label>Reason</label>
       <input type="text" id="description" placeholder="Enter reason">
     </div>
-
     <div class="input-group">
       <label>Date</label>
       <input type="date" id="datePicker">
     </div>
-
     <button class="add-btn" id="addTransactionBtn">
       Add Transaction
     </button>
-
   </div>
 
   <div class="search-box">
     <input type="text" id="searchInput" placeholder="Search by reason or date">
+  </div>
+
+  <!-- NEW FILTER BUTTONS: All / Credit / Debit (preserve UI) -->
+  <div class="filter-row" id="filterRow">
+    <button class="filter-btn active-filter" data-filter="all">All</button>
+    <button class="filter-btn" data-filter="credit">Credit</button>
+    <button class="filter-btn" data-filter="debit">Debit</button>
   </div>
 
   <div class="history-header">
@@ -407,337 +440,318 @@ select:focus{
 </div>
 
 <script>
+  (function() {
+    // ---------- STORAGE ----------
+    const STORAGE_KEY = "finora_transactions";
+    let transactions = JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
 
-const STORAGE_KEY = "finora_transactions";
+    // ---------- DOM elements ----------
+    const totalCreditEl = document.getElementById("totalCredit");
+    const totalDebitEl = document.getElementById("totalDebit");
+    const balanceEl = document.getElementById("balance");
+    const txnType = document.getElementById("txnType");
+    const amountInput = document.getElementById("amount");
+    const descriptionInput = document.getElementById("description");
+    const datePicker = document.getElementById("datePicker");
+    const addBtn = document.getElementById("addTransactionBtn");
+    const transactionsContainer = document.getElementById("transactionsContainer");
+    const txCountSpan = document.getElementById("txCount");
+    const searchInput = document.getElementById("searchInput");
+    const scrollBtn = document.getElementById("scrollToAddBtn");
 
-let transactions =
-JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+    // ---------- Filter state & elements ----------
+    let currentFilter = "all";   // "all", "credit", "debit"
+    const filterBtns = document.querySelectorAll(".filter-btn");
 
-/* DOM */
-
-const totalCreditEl = document.getElementById("totalCredit");
-const totalDebitEl = document.getElementById("totalDebit");
-const balanceEl = document.getElementById("balance");
-
-const txnType = document.getElementById("txnType");
-const amount = document.getElementById("amount");
-const description = document.getElementById("description");
-const datePicker = document.getElementById("datePicker");
-
-const addBtn = document.getElementById("addTransactionBtn");
-
-const txContainer = document.getElementById("transactionsContainer");
-
-const txCount = document.getElementById("txCount");
-
-const searchInput = document.getElementById("searchInput");
-
-const scrollBtn = document.getElementById("scrollToAddBtn");
-
-/* DEFAULT DATE */
-
-(function(){
-
-  const today = new Date();
-
-  const yyyy = today.getFullYear();
-
-  const mm = String(today.getMonth()+1)
-  .padStart(2,"0");
-
-  const dd = String(today.getDate())
-  .padStart(2,"0");
-
-  datePicker.value = `${yyyy}-${mm}-${dd}`;
-
-})();
-
-/* MONEY FORMAT */
-
-function formatMoney(value){
-
-  return `₹${Number(value).toLocaleString("en-IN",{
-    minimumFractionDigits:2,
-    maximumFractionDigits:2
-  })}`;
-
-}
-
-/* SAVE */
-
-function saveTransactions(){
-
-  localStorage.setItem(
-    STORAGE_KEY,
-    JSON.stringify(transactions)
-  );
-
-}
-
-/* TOTALS */
-
-function updateTotals(){
-
-  let credit = 0;
-  let debit = 0;
-
-  transactions.forEach(tx=>{
-
-    if(tx.type === "credit"){
-      credit += Number(tx.amount);
-    }else{
-      debit += Number(tx.amount);
+    // Helper: update active styling
+    function setActiveFilterButton(filterValue) {
+      filterBtns.forEach(btn => {
+        const btnFilter = btn.getAttribute("data-filter");
+        if (btnFilter === filterValue) {
+          btn.classList.add("active-filter");
+        } else {
+          btn.classList.remove("active-filter");
+        }
+      });
     }
 
-  });
+    // attach filter click handlers
+    function initFilterButtons() {
+      filterBtns.forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          const filterValue = btn.getAttribute("data-filter");
+          if (filterValue === "all") currentFilter = "all";
+          else if (filterValue === "credit") currentFilter = "credit";
+          else if (filterValue === "debit") currentFilter = "debit";
+          setActiveFilterButton(currentFilter);
+          renderTransactions();      // re-render with filter + search + sorting
+        });
+      });
+    }
 
-  totalCreditEl.innerText = formatMoney(credit);
-  totalDebitEl.innerText = formatMoney(debit);
-  balanceEl.innerText = formatMoney(credit - debit);
+    // ---------- HELPER: default date ----------
+    function setDefaultDate() {
+      if (!datePicker.value) {
+        const today = new Date();
+        const yyyy = today.getFullYear();
+        const mm = String(today.getMonth() + 1).padStart(2, "0");
+        const dd = String(today.getDate()).padStart(2, "0");
+        datePicker.value = `${yyyy}-${mm}-${dd}`;
+      }
+    }
 
-  txCount.innerText =
-  `${transactions.length} ${
-    transactions.length === 1 ? "item" : "items"
-  }`;
+    // ---------- Format money ----------
+    function formatMoney(value) {
+      return `₹${Number(value).toLocaleString("en-IN", {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+      })}`;
+    }
 
-}
+    // ---------- Save to localStorage ----------
+    function saveTransactions() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(transactions));
+    }
 
-/* DELETE */
+    // ---------- Update totals (credit/debit/balance) - always based on all transactions ----------
+    function updateTotals() {
+      let credit = 0;
+      let debit = 0;
+      transactions.forEach(tx => {
+        if (tx.type === "credit") {
+          credit += Number(tx.amount);
+        } else {
+          debit += Number(tx.amount);
+        }
+      });
+      totalCreditEl.innerText = formatMoney(credit);
+      totalDebitEl.innerText = formatMoney(debit);
+      balanceEl.innerText = formatMoney(credit - debit);
+      txCountSpan.innerText = `${transactions.length} ${transactions.length === 1 ? "item" : "items"}`;
+    }
 
-function deleteTransaction(id){
+    // ---------- DELETE transaction ----------
+    function deleteTransaction(id) {
+      transactions = transactions.filter(tx => tx.id !== id);
+      saveTransactions();
+      renderTransactions();   // will reapply filter + search + sorting and update totals
+    }
 
-  transactions = transactions.filter(
-    tx => tx.id !== id
-  );
+    // ---------- CORE RENDER: applies search, filter (credit/debit/all), date sorting (oldest first as original) ----------
+    function renderTransactions() {
+      updateTotals();  // totals always from raw transactions
 
-  saveTransactions();
+      // 1) get search value
+      const searchValue = searchInput.value.toLowerCase().trim();
 
-  renderTransactions();
+      // 2) start with all transactions
+      let filtered = [...transactions];
 
-}
+      // 3) APPLY TYPE FILTER (credit / debit / all) 
+      if (currentFilter === "credit") {
+        filtered = filtered.filter(tx => tx.type === "credit");
+      } else if (currentFilter === "debit") {
+        filtered = filtered.filter(tx => tx.type === "debit");
+      }
+      // "all" leaves filtered unchanged
 
-/* RENDER */
+      // 4) APPLY SEARCH filter (by reason or date)
+      if (searchValue) {
+        filtered = filtered.filter(tx => {
+          const desc = tx.description.toLowerCase();
+          const rawDate = tx.date.toLowerCase();
+          const formattedDate = rawDate.split("-").reverse().join("/");
+          return (
+            desc.includes(searchValue) ||
+            rawDate.includes(searchValue) ||
+            formattedDate.includes(searchValue)
+          );
+        });
+      }
 
-function renderTransactions(){
+      // 5) SORTING: oldest first (same as original logic) — using date then createdAt
+      filtered.sort((a, b) => {
+        const [yearA, monthA, dayA] = a.date.split("-").map(Number);
+        const [yearB, monthB, dayB] = b.date.split("-").map(Number);
+        const timeA = new Date(yearA, monthA - 1, dayA).getTime();
+        const timeB = new Date(yearB, monthB - 1, dayB).getTime();
+        if (timeA !== timeB) return timeA - timeB;
+        // if same date, older insertion first (createdAt)
+        return (a.createdAt || 0) - (b.createdAt || 0);
+      });
 
-  updateTotals();
+      // 6) render HTML
+      if (filtered.length === 0) {
+        let emptyMessage = "No matching transactions";
+        if (transactions.length === 0) emptyMessage = "No transactions yet";
+        else if (currentFilter !== "all" && searchValue) emptyMessage = `No ${currentFilter} transactions match "${searchValue}"`;
+        else if (currentFilter !== "all") emptyMessage = `No ${currentFilter} transactions found`;
+        else if (searchValue) emptyMessage = `No results for "${searchValue}"`;
+        transactionsContainer.innerHTML = `<div class="empty-state">✨ ${emptyMessage}</div>`;
+        return;
+      }
 
-  const searchValue =
-  searchInput.value.toLowerCase().trim();
+      transactionsContainer.innerHTML = "";
+      filtered.forEach(tx => {
+        const displayDate = tx.date.split("-").reverse().join("/");
+        const card = document.createElement("div");
+        card.className = "transaction-card";
+        card.innerHTML = `
+          <div class="tx-left">
+            <div class="tx-type ${tx.type}">
+              ${tx.type.toUpperCase()}
+            </div>
+            <div class="tx-desc">
+              ${escapeHtml(tx.description)}
+            </div>
+            <div class="tx-date">
+              📅 ${escapeHtml(displayDate)}
+            </div>
+          </div>
+          <div class="tx-amount ${tx.type === "credit" ? "amount-credit" : "amount-debit"}">
+            ${tx.type === "credit" ? "+" : "-"} ${formatMoney(tx.amount)}
+          </div>
+          <button class="delete-btn" data-id="${tx.id}">
+            ✕
+          </button>
+        `;
+        transactionsContainer.appendChild(card);
+      });
 
-  let filtered = [...transactions];
+      // attach delete events to new delete buttons
+      document.querySelectorAll(".delete-btn").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const id = btn.getAttribute("data-id");
+          if (id) deleteTransaction(id);
+        });
+      });
+    }
 
-  /* SEARCH */
+    // simple escape for safety
+    function escapeHtml(str) {
+      if (!str) return "";
+      return str.replace(/[&<>]/g, function(m) {
+        if (m === "&") return "&amp;";
+        if (m === "<") return "&lt;";
+        if (m === ">") return "&gt;";
+        return m;
+      });
+    }
 
-  if(searchValue){
+    // ---------- ADD transaction ----------
+    function addTransactionHandler() {
+      const type = txnType.value;
+      const amt = parseFloat(amountInput.value);
+      const desc = descriptionInput.value.trim();
+      const date = datePicker.value;
 
-    filtered = filtered.filter(tx=>{
+      if (!amt || amt <= 0) {
+        alert("Enter valid amount");
+        amountInput.focus();
+        return;
+      }
+      if (!desc) {
+        alert("Enter reason");
+        descriptionInput.focus();
+        return;
+      }
+      if (!date) {
+        alert("Select date");
+        datePicker.focus();
+        return;
+      }
 
-      const desc =
-      tx.description.toLowerCase();
+      const newTx = {
+        id: crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random().toString(36),
+        type: type,
+        amount: amt,
+        description: desc,
+        date: date,
+        createdAt: Date.now()
+      };
+      transactions.push(newTx);
+      saveTransactions();
 
-      const rawDate =
-      tx.date.toLowerCase();
+      // reset form fields (keep type but reset amount & desc)
+      amountInput.value = "";
+      descriptionInput.value = "";
+      setDefaultDate();
 
-      const formattedDate =
-      rawDate.split("-").reverse().join("/");
+      // re-render with same filter/search state
+      renderTransactions();
 
-      return (
-        desc.includes(searchValue) ||
-        rawDate.includes(searchValue) ||
-        formattedDate.includes(searchValue)
-      );
+      // optional: smooth little feedback scroll to history
+      const historyHeader = document.querySelector(".history-header");
+      if (historyHeader) historyHeader.scrollIntoView({ behavior: "smooth", block: "start" });
+      amountInput.focus();
+    }
 
+    // ---------- SEARCH event ----------
+    function onSearchInput() {
+      renderTransactions();   // search + filter + sort
+    }
+
+    // ---------- floating button scroll ----------
+    function scrollToAddCard() {
+      const addCard = document.getElementById("addCard");
+      if (addCard) {
+        addCard.scrollIntoView({ behavior: "smooth", block: "center" });
+        amountInput.focus();
+      }
+    }
+
+    // ---------- RESET DEFAULT DATE (initial) ----------
+    setDefaultDate();
+
+    // ---------- EVENT LISTENERS ----------
+    addBtn.addEventListener("click", addTransactionHandler);
+    searchInput.addEventListener("input", onSearchInput);
+    scrollBtn.addEventListener("click", scrollToAddCard);
+
+    // optional: keypress on amount/description to quickly add (Enter)
+    amountInput.addEventListener("keypress", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addTransactionHandler();
+      }
+    });
+    descriptionInput.addEventListener("keypress", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        addTransactionHandler();
+      }
     });
 
-  }
-
-  /* EARLIEST DATE FIRST */
-
-  filtered.sort((a,b)=>{
-
-    const [yearA, monthA, dayA] =
-    a.date.split("-").map(Number);
-
-    const [yearB, monthB, dayB] =
-    b.date.split("-").map(Number);
-
-    const timeA =
-    new Date(yearA, monthA - 1, dayA).getTime();
-
-    const timeB =
-    new Date(yearB, monthB - 1, dayB).getTime();
-
-    /* oldest first */
-
-    if(timeA !== timeB){
-      return timeA - timeB;
-    }
-
-    /* older inserted first */
-
-    return a.createdAt - b.createdAt;
-
-  });
-
-  if(filtered.length === 0){
-
-    txContainer.innerHTML = `
-      <div class="empty-state">
-        No matching transactions
-      </div>
-    `;
-
-    return;
-  }
-
-  txContainer.innerHTML = "";
-
-  filtered.forEach(tx=>{
-
-    const displayDate =
-    tx.date.split("-").reverse().join("/");
-
-    const card =
-    document.createElement("div");
-
-    card.className = "transaction-card";
-
-    card.innerHTML = `
-
-      <div class="tx-left">
-
-        <div class="tx-type ${tx.type}">
-          ${tx.type.toUpperCase()}
-        </div>
-
-        <div class="tx-desc">
-          ${tx.description}
-        </div>
-
-        <div class="tx-date">
-          📅 ${displayDate}
-        </div>
-
-      </div>
-
-      <div class="tx-amount ${
-        tx.type === "credit"
-        ? "amount-credit"
-        : "amount-debit"
-      }">
-
-        ${tx.type === "credit" ? "+" : "-"}
-
-        ${formatMoney(tx.amount)}
-
-      </div>
-
-      <button
-        class="delete-btn"
-        onclick="deleteTransaction('${tx.id}')"
-      >
-        ✕
-      </button>
-
-    `;
-
-    txContainer.appendChild(card);
-
-  });
-
-}
-
-/* ADD */
-
-addBtn.addEventListener("click", ()=>{
-
-  const type = txnType.value;
-
-  const amt =
-  parseFloat(amount.value);
-
-  const desc =
-  description.value.trim();
-
-  const date =
-  datePicker.value;
-
-  if(!amt || amt <= 0){
-
-    alert("Enter valid amount");
-
-    return;
-  }
-
-  if(!desc){
-
-    alert("Enter reason");
-
-    return;
-  }
-
-  if(!date){
-
-    alert("Select date");
-
-    return;
-  }
-
-  const tx = {
-
-    id: crypto.randomUUID(),
-
-    type:type,
-
-    amount:amt,
-
-    description:desc,
-
-    date:date,
-
-    createdAt:Date.now()
-
-  };
-
-  transactions.push(tx);
-
-  saveTransactions();
-
-  amount.value = "";
-  description.value = "";
-
-  renderTransactions();
-
-});
-
-/* SEARCH */
-
-searchInput.addEventListener(
-  "input",
-  renderTransactions
-);
-
-/* FLOAT BUTTON */
-
-scrollBtn.addEventListener("click", ()=>{
-
-  document
-  .getElementById("addCard")
-  .scrollIntoView({
-    behavior:"smooth",
-    block:"center"
-  });
-
-  amount.focus();
-
-});
-
-/* FIRST LOAD */
-
-renderTransactions();
-
+    // ensure amount doesn't have leading zeros issues
+    amountInput.addEventListener("input", function(e) {
+      if (this.value.startsWith("0") && this.value.length > 1 && !this.value.startsWith("0.")) {
+        this.value = this.value.replace(/^0+/, "");
+      }
+    });
+
+    // init filter buttons and active style
+    initFilterButtons();
+    // ensure 'All' is active on load (if not default)
+    setActiveFilterButton("all");
+    currentFilter = "all";
+
+    // load transactions and initial render
+    renderTransactions();
+
+    // if localStorage updates from another tab, sync gracefully
+    window.addEventListener("storage", (e) => {
+      if (e.key === STORAGE_KEY) {
+        const newData = localStorage.getItem(STORAGE_KEY);
+        if (newData) {
+          try {
+            transactions = JSON.parse(newData) || [];
+          } catch(err) { transactions = []; }
+          renderTransactions();
+        }
+      }
+    });
+  })();
 </script>
-
 </body>
 </html>
