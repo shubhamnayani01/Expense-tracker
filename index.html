@@ -302,55 +302,117 @@
 
   /* ========= VOICE ========= */
   const VoiceHandler = (() => {
-    let recognition = null;
-    let listening = false;
-    const init = () => {
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        recognition = new SpeechRecognition();
-        recognition.continuous = false;
-        recognition.interimResults = false;
-        recognition.lang = 'en-IN';
+      let recognition = null;
+      let activeCallback = null;
+
+      function isSupported() {
+        return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
       }
-    };
-    const start = (callback) => {
-      if (!recognition) return UI.toast('Speech recognition not supported');
-      if (!isSecureContext()) return UI.toast('Voice needs HTTPS or localhost');
-      if (listening) recognition.stop();
-      recognition.onresult = event => {
-        const transcript = event.results[0][0].transcript;
-        parse(transcript, callback);
-        stop();
-      };
-      recognition.onerror = event => {
-        UI.toast('Voice error: ' + event.error);
-        stop();
-      };
-      recognition.onend = () => { listening = false; UI.micActive(false); };
-      try {
-        recognition.start();
-        listening = true;
-        UI.micActive(true);
-      } catch { UI.toast('Microphone access denied'); }
-    };
-    const stop = () => {
-      if (recognition && listening) recognition.stop();
-      listening = false;
-      UI.micActive(false);
-    };
-    const parse = (text, cb) => {
-      const lower = text.toLowerCase();
-      let type = lower.includes('paid') || lower.includes('spent') || lower.includes('debit') ? 'debit' : 'credit';
-      // extract amount: handle "₹500", "500 rupees", "five hundred" not supported, just digits
-      let amount = null;
-      const numMatch = text.match(/(\d+[\d,]*\.?\d*)/);
-      if (numMatch) amount = parseFloat(numMatch[1].replace(/,/g,'')) || null;
-      const desc = text.replace(/\d+[\d,]*\.?\d*/g,'').replace(/(paid|spent|debit|received|credit|rupees|rs\.?)/gi,'').trim() || 'Voice entry';
-      cb({ amount, type, description: desc });
-    };
-    init();
-    return { start, stop };
-  })();
+
+      function initRecognition() {
+        if (!isSupported()) return null;
+        const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const r = new SR();
+        r.lang = navigator.language || 'en-US';
+        r.interimResults = false;
+        r.maxAlternatives = 1;
+        r.continuous = false;
+
+        r.onstart = () => { UI.updateMicState(true); UI.showToast('Listening...'); };
+        r.onend = () => { UI.updateMicState(false); };
+        r.onerror = (e) => { UI.updateMicState(false); UI.showToast('Voice error: ' + (e.error || e.message || 'unknown')); };
+        r.onresult = (ev) => {
+          try {
+            const transcript = Array.from(ev.results).map(r => r[0].transcript).join(' ').trim();
+            const parsed = parseTranscript(transcript);
+            if (activeCallback) activeCallback(parsed);
+            UI.showToast('Heard: ' + transcript.slice(0, 60));
+          } catch (err) { console.error(err); }
+        };
+        return r;
+      }
+
+      function start(cb) {
+        activeCallback = cb || null;
+        if (!isSupported()) {
+          UI.showToast('Voice not supported in this browser. Focus the "Description" field to use your device dictation.');
+          // Focus description so mobile OS keyboard dictation can be used as a fallback
+          document.getElementById('description').focus();
+          return;
+        }
+        if (!recognition) recognition = initRecognition();
+        try {
+          recognition.start();
+        } catch (e) {
+          // Some browsers throw if start called repeatedly; try stopping then restarting
+          try { recognition.stop(); } catch (_) { }
+          recognition = initRecognition();
+          recognition.start();
+        }
+      }
+
+      function stop() {
+        try { recognition?.stop(); } catch (e) { }
+        UI.updateMicState(false);
+      }
+
+      // Convert simple spoken number words to numeric value (supports up to millions)
+      function wordsToNumber(text) {
+        if (!text) return null;
+        text = text.toLowerCase();
+        // try direct numeric match first
+        const numMatch = text.match(/(?:rs\s?|rupee[s]?\s?|₹)?\s*([0-9]+(?:[\.,][0-9]+)?)/i);
+        if (numMatch) return parseFloat(numMatch[1].replace(',', ''));
+
+        const small = { zero:0, one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10, eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18, nineteen:19 };
+        const tens = { twenty:20, thirty:30, forty:40, fifty:50, sixty:60, seventy:70, eighty:80, ninety:90 };
+        const scales = { hundred:100, thousand:1000, lakh:100000, million:1000000 };
+        let parts = text.replace(/[-,]/g, ' ').split(/\s+/).filter(Boolean);
+        let total = 0, current = 0;
+        for (let w of parts) {
+          if (small[w] !== undefined) current += small[w];
+          else if (tens[w] !== undefined) current += tens[w];
+          else if (w === 'hundred') current *= scales[w] || 100;
+          else if (scales[w]) { current *= scales[w]; total += current; current = 0; }
+          else if (/^\d+$/.test(w)) current += parseInt(w, 10);
+          else if (/^(\d+)(?:\.(\d+))?$/.test(w)) current += parseFloat(w);
+        }
+        total += current;
+        return total || null;
+      }
+
+      function parseTranscript(transcript) {
+        // attempt to extract amount
+        let amount = null;
+        // common phrase patterns: "paid 500 to ramesh", "received 1200 from sunil", "spent 200 on snacks"
+        const amtDigits = transcript.match(/(?:rs\s?|rupee[s]?\s?|₹)\s*([0-9]+(?:[\.,][0-9]+)?)/i) || transcript.match(/\b([0-9]+(?:[\.,][0-9]+)?)\b/);
+        if (amtDigits) amount = parseFloat(amtDigits[1].replace(',', ''));
+        if (!amount) {
+          // try words to number on common phrases
+          const wordsForAmount = transcript.match(/(?:paid|got|received|gave|spent|for|amount|of)\s+([\w\s-]+)/i);
+          if (wordsForAmount) amount = wordsToNumber(wordsForAmount[1]);
+        }
+
+        // detect type
+        let type = 'debit';
+        const creditWords = /\b(received|got|added|credit|deposit|income|refund)\b/i;
+        const debitWords = /\b(paid|spent|buy|bought|purchase|send|gave|withdraw)\b/i;
+        if (creditWords.test(transcript)) type = 'credit';
+        else if (debitWords.test(transcript)) type = 'debit';
+
+        // description: remove amount and common verbs
+        let desc = transcript.replace(/(?:rs\s?|rupee[s]?\s?|₹)\s*[0-9,\.]+/ig, '');
+        desc = desc.replace(/\b(paid|spent|received|got|to|for|from|on|amount|rupees|rupee|₹)\b/ig, '');
+        desc = desc.replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|hundred|thousand|lakh|million)\b/ig, '');
+        desc = desc.replace(/\s+/g, ' ').trim();
+        if (!desc) desc = 'Voice entry';
+
+        return { amount: amount || '', type, description: desc };
+      }
+
+      return { init: () => { if (isSupported()) recognition = initRecognition(); }, start, stop, parseTranscript };
+    })();
+
 
   /* ========= CHARTS ========= */
   const Charts = (() => {
